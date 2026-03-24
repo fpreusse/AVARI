@@ -28,7 +28,7 @@ clusterExport(cl,
 clusterExport(cl, c("seq_TDP_p_s", "seq_TDP_mom_s", "seq_TDP_ARC_mom_s", 
                     "seq_TDP_hom", "m0_bound_average"))
 TDP_bounds_full <- foreach(i= 1:12, .packages=c("MASS", "hommel", "safestats"))%dopar%{
-  sim_e_vals_fun(rho=scenarios[i,1],size_R=scenarios[i,3], effect=scenarios[i,2], design_obj=design_obj, seed=12*i+i, nplan=100, B=1000, alpha=0.2)
+  sim_e_vals_fun(rho=scenarios[i,1],size_R=scenarios[i,3], effect=scenarios[i,2], design_obj=design_obj, seed=14*i+i, nplan=100, B=1000, alpha=0.2)
 }
 stopCluster(cl)
 
@@ -154,7 +154,7 @@ ggplot(df_work[df_work$size_R==500 & df_work$rho==0.2,], aes(x=n, y=mean, group 
                      values=c("pi_1"="black", "e-to-p"="cyan2", "mom"="cyan4", "mom_ARD"="aquamarine3", "ARI"="grey70"))+ #legend in color, do not show m_1
   scale_linetype_manual(breaks= c("e-to-p", "mom", "mom_ARD", "ARI"),
                         values=c("pi_1"=1, "e-to-p"=2, "mom"=5, "mom_ARD"=4, "ARI"=1))+
-  ylab(expression(bar(paste(hat(pi)[1]^n,"(R)", sep=""))))+
+  ylab(expression(bar(paste(tilde(d)[0.2]^n,"(R)", sep=""))))+
   xlab("Sample size n")+
   scale_x_continuous(breaks=c(20,40,60,80,100), limits = c(11, 100))+
   facet_grid(Pi_1~Effect, scales="free_y", labeller=label_parsed)
@@ -168,7 +168,7 @@ ggplot(df_work[df_work$effect==0.5 & df_work$pi_1==0.1,], aes(x=n, y=mean, group
                      values=c("pi_1"="black", "e-to-p"="cyan2", "mom"="cyan4", "mom_ARD"="aquamarine3", "ARI"="grey70"))+ #legend in color, do not show m_1
   scale_linetype_manual(breaks= c("e-to-p", "mom", "mom_ARD", "ARI"),
                         values=c("pi_1"=1, "e-to-p"=2, "mom"=5, "mom_ARD"=4, "ARI"=1))+
-  ylab(expression(bar(paste(hat(pi)[1]^n,"(R)", sep=""))))+
+  ylab(expression(bar(paste(tilde(d)[0.2]^n,"(R)", sep=""))))+
   xlab("Sample size n")+
   scale_x_continuous(breaks=c(20,40,60,80,100), limits = c(11, 100))+
   scale_y_continuous(breaks=c(0,0.025,0.05,0.075,0.1))+
