@@ -1,3 +1,6 @@
+################## 
+# Simulation Study
+##################
 require(safestats)
 require(hommel)
 
@@ -330,4 +333,351 @@ non_cov_rate <- function(bounds, true_pi){
   return(sum(bounds>true_pi)/1000)
 }
 
+################## 
+# Case Study
+##################
+require(safestats)
+require(hommel)
+require(fmri)
+require(oro.nifti)
 
+# Functions for the subject-level analysis -------------------
+###
+# Get estimated effect-size per voxel per subject
+###
+
+## Input:
+# subject_vec:  Vector containing the names of the nii.gz files per subject, 
+#               saved in the folder: data.
+# stim:         Convoluted HRF model and condition onset time series,
+#               Output of fmri.stimulus (package: fmri)
+# conf_vec:     Vector containing the names of the file containing the confounding 
+#               time series per subject, saved in the folder: data
+# conf_para:    Vector containing the names of the confounding parameters to be used
+#               If null: use none
+# save_subject: Should the subject specific results be automatically saved ? 
+
+## Ouput
+# effects:      A four dimensional array containing the effect-sizes per voxel 
+#               for all n subjects.
+#               The first three dimensions correspond to the location of the voxels
+#               The fourth dimension correspond to the subjects
+
+## Notes
+# If the nii.gz files per subject or the confounding time series per subject
+#  are not saved in a folder called data or if this folder is a subfolder in the 
+#  current working directory: change the file.path() command defining the variable 
+#  nii_name and cef_path, respectively.
+# If save_subject is true, the subject specific effect size maps are saved in the
+#  current working directory
+# The effect of interest is the contrast between the first and second condition,
+#  i.e., the contrast between the semantic condition and the control condition.
+
+sub_effect_size <- function(subject_vec, stim, conf_vec =NULL,conf_para=NULL, save_subject =F){
+  n <- length(subject_vec)
+  design_mat <- design_mat_i <- fmri.design(stimulus= stim,
+                                            order=2)
+  
+  
+  # Initialize 4 dimensional array to save the effect sizes of all subjects
+  effects_per_sub <- array(NA, dim=c(97,115,97,n)) 
+  
+  ## Estimate the effect-size per voxel for each subject
+  for(i in 1:n){
+    # Initialize subject-specific design matrix if confounding effects are included
+    # in the design matrix
+    if(!is.null(conf_para)){
+      cef_path <- file.path("data", conf_vec[i])
+      cef <- read.delim(cef_path)
+      id.cef <- which(names(cef)%in%conf_para)
+      design_mat_i <- cbind(design_mat, cef[,id.cef]) 
+    }
+    # Load the preprocessed BOLD signal
+    nii_name <- file.path("data",subject_vec[i])
+    dss <- readNIfTI(nii_name)
+    gc()
+    # Convert nifti object to fmridata object
+    dss <- niftiImage2fmri(niftiobj=dss, level = 0.75, mask=NULL, setmask = F, indx = NULL,
+                           indy = NULL, indz = NULL, avoidnegs = FALSE)
+    gc()
+    # Estimate the effect sizes per subject
+    out_sub <- fmri.lm(ds=dss, 
+                       z=design_mat_i, 
+                       mask = NULL,
+                       actype = c("smooth"),
+                       contrast = c(1,-1), 
+                       verbose = FALSE)
+    gc()
+    # If wanted: save subject specific results
+    effects_per_sub[,,,i]<- effect <-out_sub$cbeta/(sqrt(out_sub$var))
+    if(save_subject){
+      file_out <- paste(subject_vec[i], "_effect_per_voxel.RData", sep="")
+      save(effect,file=file_out)
+    }
+    rm(effect)
+    gc()
+  }
+  return(effects= effects_per_sub)
+}
+
+
+
+
+# Functions for the group-level analysis ----------------------------------
+###
+# Compute mom e-process for one voxel based on results of subject-level analysis
+###
+
+## Input
+# data_eff:   Four dimensional array containing the effect sizes per voxel and 
+#             per subject
+# coord:      Vector of x,y,z coordinate of the considered voxel
+# filt:       Stopping times at which the e-process should be computed
+# design_obj: The design object for that voxel required to compute the e-process, 
+#             can be NULL.
+# delta_min:  If design_obj is NULL, then the minimum relevant effect size.
+# beta:       If design_obj is NULL, the acceptable type 2 error
+
+## Output
+# loc:        Location of the voxel, i.e., the coordinates given by coord.
+# e_proc:     The e-process corresponding to this voxel
+
+## Notes
+# This function is written so that it can be used in a foreach loop
+
+e_process_per_voxel <- function(coord, data_eff, filt, design_obj=NULL, 
+                                delta_min=NULL, beta=NULL, alt="greater"){
+  coord <- unlist(coord)
+  x <- coord[1]
+  y <- coord[2]
+  z <- coord[3]
+  data_eff <- data_eff[x,y,z,]
+  gc()
+  ts <- length(filt)
+  
+  # Check if the effect size is equal to zero for all observations.
+  # This occurs if the considered coordinate is not within the brain.
+  # Return e-process = 0 at all stopping times.
+  if(sum(data_eff==0)==length(data_eff)){
+    return(list(loc=coord,
+                e_proc=rep(0, ts)))
+  }
+  
+  # Check which estimated effect-size has variance 0. 
+  # At this voxel, the SafeTTest (i.e., the e-process) cannot be computed
+  # Return NA 
+  if(sum(data_eff==data_eff[1])==length(data_eff)){
+      return(list(loc=coord,
+                  e_proc=rep(NA, ts)))
+  }
+  
+  # Use tryCatch function to ensure that function can run in parallel in a loop 
+  # even if errors occur.
+  # Indicate errors with NA.
+  tryCatch({
+    # Initialize vector to store e-process
+    e_proc <- numeric(ts)
+    
+    # If design_obj for SafeTTest is not given: define it
+    if(is.null(design_obj)){
+      design_obj <- designSafeT(deltaMin = d_min, beta=beta, alternative = alt, pb=F)
+    }
+    
+    # at each stopping time: compute the e-process value
+    for(t in 1:ts){
+      e_proc[t] <- safeTTest(data_eff[c(1:filt[t])], designObj = design_obj)$eValue
+    }
+    return(list(loc=coord,
+                e_proc=e_proc))
+  },
+  error=function(e){
+    return(list(loc=coord,
+                e_proc=rep(NA, ts)))
+  })
+}
+
+###
+# Compute anytime-valid simultaneous upper confidence bound for the number of 
+# false discoveries based on e-processes at time n as for a fixed discovery set.
+###
+
+## Input:
+# vec_e:    Vector of the sorted values of the e-processes at time n corresponding 
+#           to all considered elementary hypotheses.
+# setS:     Indices of the (sorted) elementary hypotheses that are discoveries.
+# alpha:    Confidence level
+# ell_rej:  c_alpha at time (n-1) for the discovery set setS. 
+#           If ell_rej=NULL: ell_rej is set to be the number of discoveries. 
+
+## Output:
+# c_alpha:  Upper (1-alpha) confidence bound for the number of false discoveries 
+#           at time n for the discovery set setS.
+
+m0_bound_average <- function(vec_e, setS, alpha, ell_rej=NULL){
+  S_e <- vec_e[setS]
+  # Define tilde(h)(n-1) (see Lemma 3.2)
+  if(!is.null(ell_rej)){
+    h <- ell_rej
+  }else{
+    h <- length(S_e)
+  }
+  c_alpha <- 0
+  
+  # Compute the cumulative sums over the ordered e-process values 
+  # corresponding to discovieries
+  cumsum_S_e <- cumsum(S_e[1:h])
+  
+  ## If all elementary hypotheses are discoveries:
+  # Iteratively decrease h=tilde(h)(n-1),...,1 until the hypothesis of size h
+  # with the smallest corresponding e-process value is not rejected
+  if(length(setS)==length(vec_e)){
+    while(c_alpha==0 & h >=1){
+      if(cumsum_S_e[h]<(h/alpha)){
+        c_alpha <- h
+      }else{
+        h <- h-1
+      }
+    }
+  }else{
+    ## If some elementary hypotheses are not discoveries:
+    # Compute discovery set specific threshold as in Lemma 3.2 
+    BarS_e <- vec_e[-setS]
+    max_Cumsum_e <- max((1:length(BarS_e))/alpha-cumsum(BarS_e))
+    
+    # Iteratively decrease h=tilde(h)(n-1),...,1 until the hypothesis of size h
+    # intersecting only discoveries with the smallest corresponding e-process value 
+    # is not rejected by closed testing
+    while(c_alpha== 0 & h>=1){
+      # Check: If H_K_H is not rejected by local level-alpha test it 
+      #        is also not rejected by closed testing.
+      if(cumsum_S_e[h]<(h/alpha)){
+        c_alpha <- h
+      }else{
+        if((cumsum_S_e[h]-h/alpha)<max_Cumsum_e){ 
+          c_alpha <- h
+        }else{
+          # If H_K_h is rejected by closed testing: decrease h
+          h <- h-1
+        }
+      }
+    }
+  }
+  return(c_alpha)
+}
+
+###
+# Compute the anytime-valid simultaneous bounds for the number of true discoveries 
+# based on the mom e-process in pre-defined regions of interest
+###
+
+## Input
+# e_proc_array: Four dimensional array containing the e-processes per voxel.
+#               The first three dimensions are the spatial dimensions, 
+#               the last dimensions are the considered stopping times of the e-process
+# atlas:        Three dimensional array with same dimensions as the spatial dimensions of e_proc_array, 
+#               assigns each voxel an integer indicating the brain region (ROI) the voxel belongs to.
+#               Voxels which are assigned zero are not considered to be part of the brain
+# alpha:        Confidence level of the bounds for the number of true discoveries
+# ROI:          Vector indicating which brain regions in the atlas are discovery sets. 
+#               Integers in ROI have to coincide with the integers in atlas.
+#               If ROI=NULL, bounds are computed for all brain regions simultaneously.
+# exclude_0:    True/False, indicates whether voxels belonging to no brain region in the atlas should 
+#               be removed from set of all considered voxels.
+
+## Output
+# seq_TD:       Matrix with TD bounds for each considered stopping time (rows) and each ROI (columns)
+# e_proc_mat:   Matrix containing in the columns the location, ROI and observed e-processes per voxel.
+# size_per_ROI: Vector containing the size of each considered ROI.
+
+td_bounds_fmri <- function(e_proc_array, atlas, alpha=0.2, ROI=NULL, exclude_0=T){
+  # Check that the atlas and the e-process array have the same dimensions
+  dims <- dim(atlas)
+  if(!identical(dims, dim(e_proc_array)[1:3])){stop("dimension of atlas and observations have to be identical")}
+  if(length(dim(e_proc_array))!=4){stop("e_proc_array has to have four dimensional")}
+  
+  # Initialize a matrix used in the computation of the e-processes 
+  # columns for coordinates, ROIs and stopping times
+  ts <- dim(e_proc_array)[4]
+  
+  # Build all coordinate triples at once
+  coords <- as.matrix(expand.grid(1:dims[1], 1:dims[2], 1:dims[3]))
+  
+  # Extract atlas values in the same order, i.e., flatten atlas to two dimension
+  atlas_vals <- as.vector(atlas)
+  
+  # Extract e_proc_array values, flattened in the right order (flatten into two dimensions)
+  e_vals <- matrix(aperm(e_proc_array, c(4,1,2,3)), nrow = ts) |> t()
+  
+  # Combine into final matrix
+  e_proc_mat <- cbind(coords, atlas_vals, e_vals)
+  
+  colnames(e_proc_mat) <- c("x", "y", "z","ROI", paste("n", c(1:ts),sep=""))
+  
+  # remove the voxels for which the e-process could not be computed, 
+  # i.e, e_process is NA
+  # These voxels are not considered to be part of the brain.
+  id.na <- which(is.na(e_proc_mat[,5]))
+  e_proc_mat <- e_proc_mat[-c(id.na),]
+  rm(id.na)
+  
+  # if voxels belonging to no ROI (atlas=0) are to be removed:
+  # this might differ from the voxels not considered to be part of the brain above, 
+  # since we might find activation in the white matter 
+  # which is not considered as part of the brain in an atlas 
+  if(exclude_0){
+    id.zero <- which(e_proc_mat[,4]==0)
+    e_proc_mat <- e_proc_mat[-c(id.zero),]
+    rm(id.zero)
+  }
+  
+  # compute the TDP for the ROIs
+  # if no ROI is specified, use all ROIs in the atlas
+  if(is.null(ROI)){
+    ROI <- sort(unique(e_proc_mat[,4]))
+  }
+  
+  # Initialize matrix for sequential TDP bounds
+  mat_TDP_mom <- mat_m0_bounds <- matrix(nrow=ts, ncol=length(ROI)) #one column corresponds to one ROI
+  size_ROI <- numeric(length(ROI))
+  
+  # Compute the anytime-valid simultaneous lower confidence bounds for the TDP:
+  # first stopping time: 
+  for(s in 1:length(ROI)){
+    # Sort the e-process values at the first stopping time:
+    e_proc_sort <- e_proc_mat[order(e_proc_mat[,5]),]
+    # find the rows in e_proc_mat that correspond to the considered ROI
+    id_ROI <- which(e_proc_sort[,4]==ROI[s])
+    size_ROI[s] <-length(id_ROI)
+    # 1) Compute upper confidence bounds for the number of false discoveries
+    mat_m0_bounds[1,s] <- m0_bound_average(vec_e=e_proc_sort[,5], 
+                                           setS=id_ROI, 
+                                           alpha=alpha)
+    # 2) Compute the lower confidence bounds for the number of true discoveries
+    mat_TDP_mom[1,s]<- length(id_ROI)-mat_m0_bounds[1,s]
+    rm(e_proc_sort)
+  }
+
+  if(ts>1){
+    for(n in 2:ts){
+      for(s in 1:length(ROI)){
+        # Sort the e-process values at the first stopping time:
+        e_proc_sort <- e_proc_mat[order(e_proc_mat[,(4+n)]),]
+        # find the rows in e_proc_mat that correspond to the considered ROI
+        id_ROI <- which(e_proc_sort[,4]==ROI[s])
+        #1) Compute upper confidence bounds for the number of false discoveries using mom process
+        mat_m0_bounds[n,s] <- m0_bound_average(vec_e=e_proc_sort[,(4+n)], 
+                                               setS=id_ROI, 
+                                               alpha=alpha, 
+                                               ell_rej= mat_m0_bounds[(n-1),s])
+        #2) Compute the lower confidence bounds for the number of true discoveries
+        mat_TDP_mom[n,s]<- length(id_ROI)-mat_m0_bounds[n,s]
+        rm(e_proc_sort)
+      }
+    }
+  }
+  
+  return(list(seq_TD=mat_TDP_mom,
+              e_proc_mat = e_proc_mat,
+              size_per_ROI= size_ROI))
+  
+}
